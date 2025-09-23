@@ -193,6 +193,9 @@ XRAY_IMAGE=${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}
 CONTAINER_NAME=${CONTAINER_NAME:-xray-reality}
 LISTEN_PORT_VLESS=${LISTEN_PORT_VLESS:-8443}
 LISTEN_PORT_SOCKS=${LISTEN_PORT_SOCKS:-1080}
+SOCKS_LISTEN_ADDR=${SOCKS_LISTEN_ADDR:-0.0.0.0}
+SOCKS_USERNAME=${SOCKS_USERNAME:-}
+SOCKS_PASSWORD=${SOCKS_PASSWORD:-}
 REALITY_DEST=${REALITY_DEST:-www.microsoft.com:443}
 REALITY_SERVER_NAMES=${REALITY_SERVER_NAMES:-www.microsoft.com}
 DNF_BIN=${DNF_BIN:-dnf}
@@ -226,6 +229,9 @@ if [[ -n "${PUBLIC_KEY:-}" ]]; then
 fi
 if [[ -n "${SHORT_ID:-}" ]]; then
   XRAY_SHORT_ID=$SHORT_ID
+fi
+if [[ -n "${SOCKS_ADDR:-}" ]]; then
+  SOCKS_LISTEN_ADDR=$SOCKS_ADDR
 fi
 
 require_root() {
@@ -729,6 +735,20 @@ generate_config_json() {
     private_value=${XRAY_PRIVATE_KEY}
   fi
 
+  # Build SOCKS5 settings based on authentication requirements
+  local socks_auth="noauth"
+  local socks_accounts=""
+  if [[ -n "$SOCKS_USERNAME" ]]; then
+    socks_auth="password"
+    socks_accounts=",
+        \"accounts\": [
+          {
+            \"user\": \"${SOCKS_USERNAME}\",
+            \"pass\": \"${SOCKS_PASSWORD}\"
+          }
+        ]"
+  fi
+
   cat <<EOF
 {
   "log": {
@@ -766,12 +786,13 @@ generate_config_json() {
       }
     },
     {
-      "listen": "0.0.0.0",
+      "listen": "${SOCKS_LISTEN_ADDR}",
       "port": ${LISTEN_PORT_SOCKS},
       "protocol": "socks",
       "settings": {
-        "auth": "noauth",
-        "udp": true
+        "auth": "${socks_auth}"${socks_accounts},
+        "udp": true,
+        "ip": "127.0.0.1"
       }
     }
   ],
@@ -1019,6 +1040,62 @@ uninstall_cmd() {
   info "Configuration preserved at ${CONFIG_DIR}."
 }
 
+purge_cmd() {
+  if dry_run_active; then
+    reset_dry_context
+    dry_plan_skip "Remove docker container ${CONTAINER_NAME}"
+    dry_plan_action "Delete configuration directory ${CONFIG_DIR}"
+    dry_plan_action "Delete environment file ${ENV_FILE}"
+    dry_plan_action "Delete configuration file ${CONFIG_FILE}"
+    print_dry_report
+    return
+  fi
+
+  require_root
+
+  # Confirm with user before deleting configuration files
+  info "WARNING: This will permanently delete all Xray configuration files and data."
+  info "This action cannot be undone."
+
+  local confirm
+  read -p "Type 'PURGE' to confirm deletion: " confirm
+
+  if [[ "$confirm" != "PURGE" ]]; then
+    info "Purge cancelled. Configuration files preserved."
+    return
+  fi
+
+  # Remove container first
+  if container_exists; then
+    "$DOCKER_BIN" rm -f "$CONTAINER_NAME" >/dev/null
+    info "Removed container ${CONTAINER_NAME}."
+  else
+    warn "Container ${CONTAINER_NAME} not found."
+  fi
+
+  # Delete configuration files
+  if [[ -f "$CONFIG_FILE" ]]; then
+    rm -f "$CONFIG_FILE"
+    info "Deleted configuration file ${CONFIG_FILE}."
+  fi
+
+  if [[ -f "$ENV_FILE" ]]; then
+    rm -f "$ENV_FILE"
+    info "Deleted environment file ${ENV_FILE}."
+  fi
+
+  # Delete config directory if empty
+  if [[ -d "$CONFIG_DIR" ]]; then
+    if [[ -z "$(ls -A "$CONFIG_DIR" 2>/dev/null)" ]]; then
+      rmdir "$CONFIG_DIR" 2>/dev/null && info "Removed empty configuration directory ${CONFIG_DIR}."
+    else
+      info "Configuration directory ${CONFIG_DIR} contains other files and was not removed."
+    fi
+  fi
+
+  info "Purge completed. All Xray configuration files have been deleted."
+}
+
 
 assess_dry_run_state() {
   local require_backup=${1:-0}
@@ -1171,6 +1248,7 @@ Commands:
   install    Install or upgrade the Xray VLESS Reality + SOCKS5 stack.
   status     Show container status and active listeners.
   uninstall  Remove the Xray container but keep configuration files.
+  purge      Remove the Xray container and delete all configuration files.
   selftest   Run dry-run simulations across supported distros.
 USAGE
 }
@@ -1246,6 +1324,9 @@ main() {
       ;;
     uninstall)
       uninstall_cmd "${REMAINING_ARGS[@]:-}"
+      ;;
+    purge)
+      purge_cmd "${REMAINING_ARGS[@]:-}"
       ;;
     selftest)
       selftest_cmd

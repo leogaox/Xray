@@ -72,8 +72,28 @@ curl -fsSL "https://raw.githubusercontent.com/leogaox/Xray/main/scripts/xray_one
 ```bash
 sudo bash ./scripts/xray_onekey.sh status
 sudo bash ./scripts/xray_onekey.sh uninstall
+sudo bash ./scripts/xray_onekey.sh purge  # 删除容器和所有配置文件
 sudo docker logs --tail=80 xray-reality
 ss -ltnp | egrep ':(8443|1080)\b'
+```
+
+## SOCKS5 认证支持
+脚本现在支持 SOCKS5 用户名/密码认证，增强代理安全性：
+
+### 启用认证
+```bash
+export SOCKS_USERNAME=myuser
+export SOCKS_PASSWORD=mypass
+sudo bash ./scripts/xray_onekey.sh install
+```
+
+### 禁用认证（默认）
+不设置 `SOCKS_USERNAME` 时，SOCKS5 使用无认证模式。
+
+### 监听地址配置
+```bash
+export SOCKS_ADDR=127.0.0.1  # 仅本地访问
+export SOCKS_ADDR=0.0.0.0    # 所有网络接口（默认）
 ```
 
 ## 配置与数据路径
@@ -86,6 +106,9 @@ ss -ltnp | egrep ':(8443|1080)\b'
 export SNI=www.cloudflare.com
 export VLESS_PORT=8443
 export SOCKS_PORT=1080
+export SOCKS_ADDR=0.0.0.0  # SOCKS5 监听地址
+export SOCKS_USERNAME=user123  # SOCKS5 用户名（可选，启用认证）
+export SOCKS_PASSWORD=pass123  # SOCKS5 密码（与用户名配对）
 export UUID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 export PRIVATE_KEY="你的Reality私钥"
 export PUBLIC_KEY="与你的私钥配对的Reality公钥"
@@ -110,6 +133,25 @@ sudo bash xray_onekey.sh install
 - 不要在日志/聊天/Issue中泄露 Reality 私钥。
 - 仓库已通过 .gitignore 忽略 reality.env、config.json。
 
+
+## 数据清理
+脚本提供两种清理方式：
+
+### 卸载（保留配置）
+```bash
+sudo bash ./scripts/xray_onekey.sh uninstall
+# 或使用 Makefile
+make uninstall
+```
+删除 Docker 容器但保留所有配置文件，便于后续重新部署。
+
+### 清除（删除所有数据）
+```bash
+sudo bash ./scripts/xray_onekey.sh purge
+# 或使用 Makefile
+make purge
+```
+删除 Docker 容器和所有配置文件（包括 `config.json`、`reality.env`），需要输入 `PURGE` 确认。
 
 ## 开发与自测
 - 使用 `XRAY_DRY_RUN=1` 或 `--dry-run` 可在本地渲染配置并输出执行计划，不触发 docker、systemctl、iptables 等特权操作。例如：`XRAY_DRY_RUN=1 ./scripts/xray_onekey.sh install`。
