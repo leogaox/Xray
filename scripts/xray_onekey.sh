@@ -552,27 +552,78 @@ load_or_generate_identity() {
 
   if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
     local key_output=""
+    local private_key=""
+    local public_key=""
+    local raw_output=""
+
+    # 多路回退：同时捕获 stdout+stderr
     # 尝试 1：默认 entrypoint
-    key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>&1 || true)
+    raw_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>&1 || true)
+    if [[ -n "$raw_output" ]]; then
+      key_output="$raw_output"
+      info "Attempt 1 (default entrypoint) output captured"
+    fi
+
     # 尝试 2：显式入口名为 xray
     if [[ -z "$key_output" ]]; then
-      key_output=$("$DOCKER_BIN" run --rm --entrypoint xray "$XRAY_IMAGE" x25519 2>&1 || true)
+      raw_output=$("$DOCKER_BIN" run --rm --entrypoint xray "$XRAY_IMAGE" x25519 2>&1 || true)
+      if [[ -n "$raw_output" ]]; then
+        key_output="$raw_output"
+        info "Attempt 2 (explicit entrypoint) output captured"
+      fi
     fi
+
     # 尝试 3：备用镜像
     if [[ -z "$key_output" ]]; then
-      key_output=$("$DOCKER_BIN" run --rm teddysun/xray:1.8.23 xray x25519 2>&1 || true)
+      raw_output=$("$DOCKER_BIN" run --rm teddysun/xray:1.8.23 xray x25519 2>&1 || true)
+      if [[ -n "$raw_output" ]]; then
+        key_output="$raw_output"
+        info "Attempt 3 (fallback image) output captured"
+      fi
     fi
-    # 稳健解析：取“冒号/等号后内容”的首行
-    if [[ -z "${XRAY_PRIVATE_KEY:-}" ]]; then
-      XRAY_PRIVATE_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^[Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*//p' | head -n1)
+
+    # 稳健解析：大小写不敏感，允许任意空白，分隔符支持 : 或 =
+    if [[ -n "$key_output" ]]; then
+      while IFS= read -r line; do
+        # 解析 Private key
+        if [[ -z "$private_key" ]]; then
+          if [[ "$line" =~ ^[[:space:]]*[Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
+            private_key="${BASH_REMATCH[1]}"
+            continue
+          fi
+        fi
+        # 解析 Public key
+        if [[ -z "$public_key" ]]; then
+          if [[ "$line" =~ ^[[:space:]]*[Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
+            public_key="${BASH_REMATCH[1]}"
+            continue
+          fi
+        fi
+        # 如果一行包含两个键值对
+        if [[ "$line" =~ ([Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
+          if [[ -z "$private_key" ]]; then
+            private_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
+          fi
+        fi
+        if [[ "$line" =~ ([Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
+          if [[ -z "$public_key" ]]; then
+            public_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
+          fi
+        fi
+      done <<< "$key_output"
     fi
-    if [[ -z "${XRAY_PUBLIC_KEY:-}" ]]; then
-      XRAY_PUBLIC_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^[Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*//p' | head -n1)
+
+    # 仅在成功解析时设置变量
+    if [[ -n "$private_key" ]]; then
+      XRAY_PRIVATE_KEY=$private_key
+    fi
+    if [[ -n "$public_key" ]]; then
+      XRAY_PUBLIC_KEY=$public_key
     fi
 
     if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
       error "Unable to determine Reality key pair."
-      error "Raw output was:"
+      error "Raw output from all attempts:"
       printf_with_prefix <<<"$key_output"
       exit 1
     fi
