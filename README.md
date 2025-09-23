@@ -23,7 +23,7 @@ ssh root@<VPS_IP>
 sudo dnf -y install git
 git clone https://github.com/leogaox/Xray.git
 cd Xray
-sudo ./scripts/xray_onekey.sh install
+sudo bash ./scripts/xray_onekey.sh install
 ```
 
 ### B. 下载 ZIP 上传
@@ -31,7 +31,7 @@ sudo ./scripts/xray_onekey.sh install
 scp Xray.zip root@<VPS_IP>:/root/
 ssh root@<VPS_IP>
 unzip Xray.zip && cd Xray
-sudo ./scripts/xray_onekey.sh install
+sudo bash ./scripts/xray_onekey.sh install
 ```
 
 ### C. 仅拉取脚本
@@ -41,6 +41,11 @@ sudo dnf -y install curl
 sudo curl -fsSL "https://raw.githubusercontent.com/leogaox/Xray/main/scripts/xray_onekey.sh" -o /root/xray_onekey.sh
 sudo chmod +x /root/xray_onekey.sh
 sudo /root/xray_onekey.sh install
+```
+
+### D. Raw 脚本一行安装
+```bash
+curl -fsSL "https://raw.githubusercontent.com/leogaox/Xray/main/scripts/xray_onekey.sh" | sudo bash -s -- install
 ```
 
 ## 防火墙放行（按发行版）
@@ -65,11 +70,16 @@ sudo /root/xray_onekey.sh install
 
 ## 常用命令
 ```bash
-sudo ./scripts/xray_onekey.sh status
-sudo ./scripts/xray_onekey.sh uninstall
+sudo bash ./scripts/xray_onekey.sh status
+sudo bash ./scripts/xray_onekey.sh uninstall
 sudo docker logs --tail=80 xray-reality
 ss -ltnp | egrep ':(8443|1080)\b'
 ```
+
+## 配置与数据路径
+- 仓库代码可以放在任意目录，只需在执行命令前 cd 到该目录。
+- 脚本默认将运行期配置与数据写入 `/srv/docker/xray`，包含 `config.json`、`reality.env` 与 Docker 卷。
+- 需要指定其他路径时，可在运行命令前设置 `CONFIG_DIR=/path/to/xray`，脚本会基于该路径生成配置并维护备份。
 
 ## 可选参数
 ```bash
@@ -80,10 +90,10 @@ export UUID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 export PRIVATE_KEY="你的Reality私钥"
 export PUBLIC_KEY="与你的私钥配对的Reality公钥"
 export SHORT_ID="8~16位十六进制"
-sudo ./scripts/xray_onekey.sh install
+sudo bash ./scripts/xray_onekey.sh install
 ```
 
-## 一行安装命令（Raw 脚本）
+## 安装（Raw 脚本）
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/leogaox/Xray/main/scripts/xray_onekey.sh" | sudo bash -s -- install
 ```
@@ -106,3 +116,6 @@ sudo bash xray_onekey.sh install
 - 结合 `XRAY_MOCK_DISTRO=rocky|ubuntu|debian` 覆盖不同包管理器路径，观察对应的依赖安装提示与防火墙指引。
 - 运行 `./scripts/xray_onekey.sh selftest` 会在单次执行内模拟 Rocky 9、Ubuntu 22.04、Debian 12 的首次安装与重复安装流程，验证备份动作与渲染内容是否符合预期。
 - DRY-RUN 输出会对 Reality 私钥做脱敏处理，仅展示 UUID / 公钥 / Short ID 等非敏感字段。
+
+## 排错
+- 如遇 `^M` 或 `bash\r` 报错，多半是 CRLF 行尾导致，可先执行 `sed -i 's/\r$//' scripts/xray_onekey.sh` 或使用 `dos2unix` 转换后再运行。

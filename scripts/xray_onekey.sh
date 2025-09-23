@@ -552,7 +552,7 @@ load_or_generate_identity() {
 
   if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
     local key_output
-    key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" xray x25519)
+    key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519)
     XRAY_PRIVATE_KEY=${XRAY_PRIVATE_KEY:-$(printf '%s\n' "$key_output" | awk '/Private key/ {print $3}')}
     XRAY_PUBLIC_KEY=${XRAY_PUBLIC_KEY:-$(printf '%s\n' "$key_output" | awk '/Public key/ {print $3}')}
   fi
