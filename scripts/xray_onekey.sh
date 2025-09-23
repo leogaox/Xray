@@ -186,7 +186,7 @@ dry_placeholder_public_key() {
   printf 'dryrun-public-%s\n' "${hash:0:22}"
 }
 
-CONFIG_DIR=${CONFIG_DIR:-/etc/xray}
+CONFIG_DIR=${CONFIG_DIR:-/srv/docker/xray}
 CONFIG_FILE=${CONFIG_FILE:-$CONFIG_DIR/config.json}
 ENV_FILE=${ENV_FILE:-$CONFIG_DIR/reality.env}
 XRAY_IMAGE=${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}
