@@ -551,14 +551,25 @@ load_or_generate_identity() {
   XRAY_SHORT_ID=${XRAY_SHORT_ID:-$(openssl rand -hex 8)}
 
   if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
-    local key_output
-    key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519)
-    XRAY_PRIVATE_KEY=${XRAY_PRIVATE_KEY:-$(printf '%s\n' "$key_output" | awk '/Private key/ {print $3}')}
-    XRAY_PUBLIC_KEY=${XRAY_PUBLIC_KEY:-$(printf '%s\n' "$key_output" | awk '/Public key/ {print $3}')}
+    local key_output=""
+    # 尝试 1：显式入口
+    key_output=$("$DOCKER_BIN" run --rm --entrypoint /usr/bin/xray "$XRAY_IMAGE" x25519 2>/dev/null || true)
+    # 尝试 2：回退到镜像默认 entrypoint
+    if [[ -z "$key_output" ]]; then
+      key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>/dev/null || true)
+    fi
+    # 稳健解析：取“冒号后内容”的首行
+    if [[ -z "${XRAY_PRIVATE_KEY:-}" ]]; then
+      XRAY_PRIVATE_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^Private[[:space:]]*key[[:space:]]*:[[:space:]]*//p' | head -n1)
+    fi
+    if [[ -z "${XRAY_PUBLIC_KEY:-}" ]]; then
+      XRAY_PUBLIC_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^Public[[:space:]]*key[[:space:]]*:[[:space:]]*//p' | head -n1)
+    fi
   fi
 
   if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
     error "Unable to determine Reality key pair."
+    error "Tried: 'docker run --rm --entrypoint /usr/bin/xray $XRAY_IMAGE x25519' and fallback 'docker run --rm $XRAY_IMAGE x25519'."
     exit 1
   fi
 
