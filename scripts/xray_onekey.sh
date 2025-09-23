@@ -535,6 +535,66 @@ XRAY_PUBLIC_KEY=$XRAY_PUBLIC_KEY
 EOF
 }
 
+parse_key_output() {
+  local output="$1"
+  local _private_key=""
+  local _public_key=""
+
+  while IFS= read -r line; do
+    # 解析 Private key（支持 Private key: 和 PrivateKey:）
+    if [[ -z "$_private_key" ]]; then
+      if [[ "$line" =~ ^[[:space:]]*[Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
+        _private_key="${BASH_REMATCH[1]}"
+        continue
+      elif [[ "$line" =~ ^[[:space:]]*[Pp][Rr][Ii][Vv][Aa][Tt][Ee][Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
+        _private_key="${BASH_REMATCH[1]}"
+        continue
+      fi
+    fi
+
+    # 解析 Public key（支持 Public key: 和 PublicKey:）
+    if [[ -z "$_public_key" ]]; then
+      if [[ "$line" =~ ^[[:space:]]*[Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
+        _public_key="${BASH_REMATCH[1]}"
+        continue
+      elif [[ "$line" =~ ^[[:space:]]*[Pp][Uu][Bb][Ll][Ii][Cc][Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
+        _public_key="${BASH_REMATCH[1]}"
+        continue
+      fi
+    fi
+
+    # 处理一行包含多个键值对的情况
+    if [[ "$line" =~ ([Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
+      if [[ -z "$_private_key" ]]; then
+        _private_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
+      fi
+    fi
+    if [[ "$line" =~ ([Pp][Rr][Ii][Vv][Aa][Tt][Ee][Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
+      if [[ -z "$_private_key" ]]; then
+        _private_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
+      fi
+    fi
+    if [[ "$line" =~ ([Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
+      if [[ -z "$_public_key" ]]; then
+        _public_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
+      fi
+    fi
+    if [[ "$line" =~ ([Pp][Uu][Bb][Ll][Ii][Cc][Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
+      if [[ -z "$_public_key" ]]; then
+        _public_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
+      fi
+    fi
+  done <<< "$output"
+
+  # 更新全局变量（仅在函数内部使用）
+  if [[ -n "$_private_key" ]]; then
+    private_key="$_private_key"
+  fi
+  if [[ -n "$_public_key" ]]; then
+    public_key="$_public_key"
+  fi
+}
+
 load_or_generate_identity() {
   if dry_run_active; then
     load_identity_dry_run
@@ -551,66 +611,75 @@ load_or_generate_identity() {
   XRAY_SHORT_ID=${XRAY_SHORT_ID:-$(openssl rand -hex 8)}
 
   if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
-    local key_output=""
+    local all_attempts_output=""
     local private_key=""
     local public_key=""
-    local raw_output=""
+    local attempt_output=""
 
-    # 多路回退：同时捕获 stdout+stderr
-    # 尝试 1：默认 entrypoint
-    raw_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>&1 || true)
-    if [[ -n "$raw_output" ]]; then
-      key_output="$raw_output"
-      info "Attempt 1 (default entrypoint) output captured"
-    fi
-
-    # 尝试 2：显式入口名为 xray
-    if [[ -z "$key_output" ]]; then
-      raw_output=$("$DOCKER_BIN" run --rm --entrypoint xray "$XRAY_IMAGE" x25519 2>&1 || true)
-      if [[ -n "$raw_output" ]]; then
-        key_output="$raw_output"
-        info "Attempt 2 (explicit entrypoint) output captured"
+    # 尝试 A：默认 entrypoint
+    attempt_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>&1 || true)
+    if [[ -n "$attempt_output" ]]; then
+      all_attempts_output+="=== Attempt A (default entrypoint) ===\n$attempt_output\n"
+      info "Attempt A (default entrypoint) output captured"
+      parse_key_output "$attempt_output"
+      if [[ -n "$private_key" && -n "$public_key" ]]; then
+        info "Successfully obtained both keys from Attempt A"
       fi
     fi
 
-    # 尝试 3：备用镜像
-    if [[ -z "$key_output" ]]; then
-      raw_output=$("$DOCKER_BIN" run --rm teddysun/xray:1.8.23 xray x25519 2>&1 || true)
-      if [[ -n "$raw_output" ]]; then
-        key_output="$raw_output"
-        info "Attempt 3 (fallback image) output captured"
+    # 尝试 B：显式入口名为 xray
+    if [[ -z "$private_key" || -z "$public_key" ]]; then
+      attempt_output=$("$DOCKER_BIN" run --rm --entrypoint xray "$XRAY_IMAGE" x25519 2>&1 || true)
+      if [[ -n "$attempt_output" ]]; then
+        all_attempts_output+="=== Attempt B (explicit entrypoint) ===\n$attempt_output\n"
+        info "Attempt B (explicit entrypoint) output captured"
+        parse_key_output "$attempt_output"
+        if [[ -n "$private_key" && -n "$public_key" ]]; then
+          info "Successfully obtained both keys from Attempt B"
+        fi
       fi
     fi
 
-    # 稳健解析：大小写不敏感，允许任意空白，分隔符支持 : 或 =
-    if [[ -n "$key_output" ]]; then
-      while IFS= read -r line; do
-        # 解析 Private key
-        if [[ -z "$private_key" ]]; then
-          if [[ "$line" =~ ^[[:space:]]*[Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
-            private_key="${BASH_REMATCH[1]}"
-            continue
+    # 尝试 C：备用镜像
+    if [[ -z "$private_key" || -z "$public_key" ]]; then
+      attempt_output=$("$DOCKER_BIN" run --rm teddysun/xray:1.8.23 xray x25519 2>&1 || true)
+      if [[ -n "$attempt_output" ]]; then
+        all_attempts_output+="=== Attempt C (fallback image) ===\n$attempt_output\n"
+        info "Attempt C (fallback image) output captured"
+        parse_key_output "$attempt_output"
+        if [[ -n "$private_key" && -n "$public_key" ]]; then
+          info "Successfully obtained both keys from Attempt C"
+        fi
+      fi
+    fi
+
+    # 尝试 D：私钥转公钥（如果只有私钥没有公钥）
+    if [[ -n "$private_key" && -z "$public_key" ]]; then
+      info "Private key found but public key missing, attempting derivation"
+
+      # 尝试 D1：默认镜像私钥转公钥
+      attempt_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 -i "$private_key" 2>&1 || true)
+      if [[ -n "$attempt_output" ]]; then
+        all_attempts_output+="=== Attempt D1 (private to public derivation) ===\n$attempt_output\n"
+        info "Attempt D1 (private to public derivation) output captured"
+        parse_key_output "$attempt_output"
+        if [[ -n "$public_key" ]]; then
+          info "Successfully derived public key from private key"
+        fi
+      fi
+
+      # 尝试 D2：备用镜像私钥转公钥
+      if [[ -z "$public_key" ]]; then
+        attempt_output=$("$DOCKER_BIN" run --rm teddysun/xray:1.8.23 xray x25519 -i "$private_key" 2>&1 || true)
+        if [[ -n "$attempt_output" ]]; then
+          all_attempts_output+="=== Attempt D2 (fallback private to public) ===\n$attempt_output\n"
+          info "Attempt D2 (fallback private to public) output captured"
+          parse_key_output "$attempt_output"
+          if [[ -n "$public_key" ]]; then
+            info "Successfully derived public key from fallback image"
           fi
         fi
-        # 解析 Public key
-        if [[ -z "$public_key" ]]; then
-          if [[ "$line" =~ ^[[:space:]]*[Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
-            public_key="${BASH_REMATCH[1]}"
-            continue
-          fi
-        fi
-        # 如果一行包含两个键值对
-        if [[ "$line" =~ ([Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
-          if [[ -z "$private_key" ]]; then
-            private_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
-          fi
-        fi
-        if [[ "$line" =~ ([Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[^[:space:]]+) ]]; then
-          if [[ -z "$public_key" ]]; then
-            public_key=$(echo "${BASH_REMATCH[1]}" | sed -E 's/^[^:=]*[:=][[:space:]]*//')
-          fi
-        fi
-      done <<< "$key_output"
+      fi
     fi
 
     # 仅在成功解析时设置变量
@@ -624,7 +693,7 @@ load_or_generate_identity() {
     if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
       error "Unable to determine Reality key pair."
       error "Raw output from all attempts:"
-      printf_with_prefix <<<"$key_output"
+      printf_with_prefix <<<"$all_attempts_output"
       exit 1
     fi
   fi
