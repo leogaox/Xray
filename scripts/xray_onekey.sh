@@ -285,11 +285,6 @@ ensure_prereqs() {
         dry_plan_skip "Install and enable ${CHRONY_SERVICE} for time sync"
         dry_plan_action "Time sync guidance: inspect chronyc/timedatectl output (no changes)"
         ;;
-      debian)
-        dry_plan_skip "Install Docker packages via ${APT_GET_BIN}"
-        dry_plan_skip "Enable docker service with systemctl"
-        dry_plan_action "Time sync guidance: enable systemd-timesyncd/chrony if present"
-        ;;
       *)
         dry_plan_action "Manual prerequisite check for unknown distro"
         ;;
@@ -300,9 +295,6 @@ ensure_prereqs() {
   case "$OS_FAMILY" in
     rocky)
       ensure_prereqs_rocky
-      ;;
-    debian)
-      ensure_prereqs_debian
       ;;
     *)
       warn "未检测到受支持的包管理器，请手动确认 docker 与时间同步服务已安装。"
@@ -323,18 +315,6 @@ detect_os_family() {
         info "Dry-run: using mocked distro rocky"
         return
         ;;
-      ubuntu)
-        OS_FAMILY=debian
-        OS_DISTRO=ubuntu
-        info "Dry-run: using mocked distro ubuntu"
-        return
-        ;;
-      debian)
-        OS_FAMILY=debian
-        OS_DISTRO=debian
-        info "Dry-run: using mocked distro debian"
-        return
-        ;;
       *)
         OS_FAMILY=unknown
         OS_DISTRO=$XRAY_MOCK_DISTRO
@@ -353,8 +333,6 @@ detect_os_family() {
 
   if command -v "$DNF_BIN" >/dev/null 2>&1; then
     OS_FAMILY=rocky
-  elif command -v "$APT_GET_BIN" >/dev/null 2>&1; then
-    OS_FAMILY=debian
   else
     OS_FAMILY=unknown
     warn "未适配的系统：请手动安装 Docker 与时间同步组件。"
@@ -393,29 +371,6 @@ ensure_chrony_rocky() {
   fi
 }
 
-ensure_prereqs_debian() {
-  ensure_binary "apt-get" "$APT_GET_BIN"
-
-  if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
-    info "Docker 未检测到，使用 $APT_GET_BIN 安装 docker 组件..."
-    "$APT_GET_BIN" update -y
-    "$APT_GET_BIN" install -y docker.io || "$APT_GET_BIN" install -y docker-ce || warn "Docker 安装失败，请手动安装。"
-  fi
-
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl enable --now docker >/dev/null 2>&1 || warn "无法自动启动 docker 服务，请手动确认。"
-  fi
-
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
-    systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || warn "无法启用 systemd-timesyncd，请手动确认时间同步。"
-  fi
-
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files chrony.service >/dev/null 2>&1; then
-    systemctl enable --now chrony >/dev/null 2>&1 || true
-  fi
-
-  report_time_sync_status
-}
 
 report_time_sync_status() {
   if dry_run_active; then
@@ -858,7 +813,7 @@ start_container() {
   fi
 
   stop_existing_container
-  "$DOCKER_BIN" run -d     --name "$CONTAINER_NAME"     --restart unless-stopped     -p "${LISTEN_PORT_VLESS}:${LISTEN_PORT_VLESS}"     -p "${LISTEN_PORT_SOCKS}:${LISTEN_PORT_SOCKS}"     -v "$CONFIG_FILE":/etc/xray/config.json:ro     "$XRAY_IMAGE" run -c /etc/xray/config.json >/dev/null
+  "$DOCKER_BIN" run -d     --name "$CONTAINER_NAME"     --restart unless-stopped     -p "${LISTEN_PORT_VLESS}:${LISTEN_PORT_VLESS}"     -p "${LISTEN_PORT_SOCKS}:${LISTEN_PORT_SOCKS}"     -v "$CONFIG_FILE":/etc/xray/config.json:ro     --user "$(id -u):$(id -g)"     "$XRAY_IMAGE" >/dev/null
   info "Started container ${CONTAINER_NAME} using image ${XRAY_IMAGE}."
 }
 
@@ -890,49 +845,14 @@ ensure_mss_clamp() {
 
 print_firewall_hint() {
   if dry_run_active; then
-    case "$OS_FAMILY" in
-      rocky)
-        dry_plan_skip "Adjust firewalld to allow TCP 8443/1080"
-        ;;
-      debian)
-        if [[ "$OS_DISTRO" == "ubuntu" ]]; then
-          dry_plan_skip "Adjust ufw to allow TCP 8443/1080"
-        elif [[ "$OS_DISTRO" == "debian" ]]; then
-          dry_plan_action "Reminder: Debian 默认未启用防火墙，检查云安全组"
-        else
-          dry_plan_action "Reminder: configure firewall rules for 8443/1080"
-        fi
-        ;;
-      *)
-        dry_plan_action "Reminder: confirm TCP 8443/1080 reachability"
-        ;;
-    esac
+    dry_plan_skip "Adjust firewalld to allow TCP 8443/1080"
     return
   fi
 
-  case "$OS_FAMILY" in
-    rocky)
-      info "防火墙放行示例（firewalld，可选）："
-      info "  sudo firewall-cmd --permanent --add-port=8443/tcp"
-      info "  sudo firewall-cmd --permanent --add-port=1080/tcp"
-      info "  sudo firewall-cmd --reload"
-      ;;
-    debian)
-      if [[ "$OS_DISTRO" == "ubuntu" ]]; then
-        info "防火墙放行示例（ufw，可选）："
-        info "  sudo ufw allow 8443/tcp"
-        info "  sudo ufw allow 1080/tcp"
-        info "  sudo ufw reload"
-      elif [[ "$OS_DISTRO" == "debian" ]]; then
-        info "Debian 默认未启用防火墙，请根据需要配置 iptables 或云安全组开放 8443/1080。"
-      else
-        info "请根据发行版配置防火墙放行 8443 与 1080 端口。"
-      fi
-      ;;
-    *)
-      info "请确认已开放 8443 与 1080 端口供客户端访问。"
-      ;;
-  esac
+  info "防火墙放行示例（firewalld，可选）："
+  info "  sudo firewall-cmd --permanent --add-port=8443/tcp"
+  info "  sudo firewall-cmd --permanent --add-port=1080/tcp"
+  info "  sudo firewall-cmd --reload"
 }
 
 listening_ports() {
