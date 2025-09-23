@@ -552,11 +552,11 @@ load_or_generate_identity() {
 
   if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
     local key_output=""
-    # 尝试 1：显式入口，捕获 stdout/stderr
-    key_output=$("$DOCKER_BIN" run --rm --entrypoint /usr/bin/xray "$XRAY_IMAGE" x25519 2>&1 || true)
-    # 尝试 2：回退到镜像默认 entrypoint
+    # 尝试 1：默认 entrypoint
+    key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>&1 || true)
+    # 尝试 2：显式入口名为 xray
     if [[ -z "$key_output" ]]; then
-      key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>&1 || true)
+      key_output=$("$DOCKER_BIN" run --rm --entrypoint xray "$XRAY_IMAGE" x25519 2>&1 || true)
     fi
     # 尝试 3：备用镜像
     if [[ -z "$key_output" ]]; then
@@ -573,7 +573,7 @@ load_or_generate_identity() {
     if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
       error "Unable to determine Reality key pair."
       error "Raw output was:"
-      printf '%s\n' "$key_output" | printf_with_prefix
+      printf_with_prefix <<<"$key_output"
       exit 1
     fi
   fi
