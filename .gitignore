@@ -1,0 +1,18 @@
+# OS / 编辑器
+.DS_Store
+._*
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# 临时与构建
+tmp/
+*.log
+*.bak
+*.tmp
+
+# 敏感与生成文件
+reality.env
+*.env
+config.json
