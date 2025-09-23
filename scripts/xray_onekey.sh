@@ -113,6 +113,27 @@ printf_with_prefix() {
   done
 }
 
+generate_socks_credentials() {
+  if [[ -n "$SOCKS_USERNAME" && -n "$SOCKS_PASSWORD" ]]; then
+    return 0  # User provided credentials, no generation needed
+  fi
+
+  if dry_run_active; then
+    SOCKS_USERNAME="dryrun-user-$(dry_hash_from_seed "socks" | head -c 8)"
+    SOCKS_PASSWORD="<redacted>"
+    info "Dry-run: Would generate SOCKS5 credentials"
+    return 0
+  fi
+
+  # Generate username: 8-12 characters [a-z0-9]
+  SOCKS_USERNAME=$(openssl rand -base64 9 | tr -dc 'a-z0-9' | head -c $((8 + RANDOM % 5)))
+
+  # Generate password: 16-24 characters with mixed case and numbers
+  SOCKS_PASSWORD=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c $((16 + RANDOM % 9)))
+
+  info "Generated SOCKS5 credentials: username=${SOCKS_USERNAME}, password=<redacted>"
+}
+
 print_dry_report() {
   if ! dry_run_active; then
     return
@@ -193,7 +214,7 @@ XRAY_IMAGE=${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}
 CONTAINER_NAME=${CONTAINER_NAME:-xray-reality}
 LISTEN_PORT_VLESS=${LISTEN_PORT_VLESS:-8443}
 LISTEN_PORT_SOCKS=${LISTEN_PORT_SOCKS:-1080}
-SOCKS_LISTEN_ADDR=${SOCKS_LISTEN_ADDR:-0.0.0.0}
+SOCKS_LISTEN_ADDR=${SOCKS_LISTEN_ADDR:-127.0.0.1}
 SOCKS_USERNAME=${SOCKS_USERNAME:-}
 SOCKS_PASSWORD=${SOCKS_PASSWORD:-}
 REALITY_DEST=${REALITY_DEST:-www.microsoft.com:443}
@@ -690,16 +711,40 @@ generate_config_json() {
     private_value=${XRAY_PRIVATE_KEY}
   fi
 
-  # Build SOCKS5 settings based on authentication requirements
-  local socks_auth="noauth"
+  # Validate SOCKS5 configuration
+  if [[ "$SOCKS_LISTEN_ADDR" == "0.0.0.0" ]] && [[ -z "$SOCKS_USERNAME" || -z "$SOCKS_PASSWORD" ]]; then
+    error "SOCKS5 cannot listen on 0.0.0.0 without authentication. Please set SOCKS_USERNAME and SOCKS_PASSWORD."
+    exit 1
+  fi
+
+  # Build SOCKS5 settings - always use password auth when credentials exist
+  local socks_auth="password"
   local socks_accounts=""
-  if [[ -n "$SOCKS_USERNAME" ]]; then
-    socks_auth="password"
+
+  if [[ -n "$SOCKS_USERNAME" && -n "$SOCKS_PASSWORD" ]]; then
+    local password_value="$SOCKS_PASSWORD"
+    if [[ "$mode" == "preview" ]]; then
+      password_value="<redacted>"
+    fi
     socks_accounts=",
         \"accounts\": [
           {
             \"user\": \"${SOCKS_USERNAME}\",
-            \"pass\": \"${SOCKS_PASSWORD}\"
+            \"pass\": \"${password_value}\"
+          }
+        ]"
+  else
+    # Generate credentials if not provided
+    generate_socks_credentials
+    local password_value="$SOCKS_PASSWORD"
+    if [[ "$mode" == "preview" ]]; then
+      password_value="<redacted>"
+    fi
+    socks_accounts=",
+        \"accounts\": [
+          {
+            \"user\": \"${SOCKS_USERNAME}\",
+            \"pass\": \"${password_value}\"
           }
         ]"
   fi
@@ -897,6 +942,18 @@ install_cmd() {
   ensure_mss_clamp
   start_container
   print_client_details
+
+  # Display SOCKS5 status and credentials
+  info "SOCKS5: listen=${SOCKS_LISTEN_ADDR}:${LISTEN_PORT_SOCKS}, auth=password"
+  if [[ -n "$SOCKS_USERNAME" && -n "$SOCKS_PASSWORD" ]]; then
+    if dry_run_active; then
+      info "SOCKS5 credentials - Username: ${SOCKS_USERNAME}, Password: <redacted>"
+    else
+      info "SOCKS5 credentials - Username: ${SOCKS_USERNAME}, Password: ${SOCKS_PASSWORD}"
+      info "Note: These credentials are displayed once and not saved to logs."
+    fi
+  fi
+
   info "Configuration saved to ${CONFIG_FILE}."
   print_firewall_hint
 
@@ -935,6 +992,9 @@ status_cmd() {
   else
     warn "Ports ${LISTEN_PORT_VLESS} and ${LISTEN_PORT_SOCKS} are not currently listening."
   fi
+
+  # Display SOCKS5 status
+  info "SOCKS5: ${SOCKS_LISTEN_ADDR}:${LISTEN_PORT_SOCKS} (auth=password)"
 
   print_client_details
 }
@@ -977,12 +1037,17 @@ purge_cmd() {
   info "WARNING: This will permanently delete all Xray configuration files and data."
   info "This action cannot be undone."
 
-  local confirm
-  read -p "Type 'PURGE' to confirm deletion: " confirm
+  # Skip confirmation if XRAY_PURGE_CONFIRM=1 is set
+  if [[ "${XRAY_PURGE_CONFIRM:-0}" != "1" ]]; then
+    local confirm
+    read -p "Type 'PURGE' to confirm deletion: " confirm
 
-  if [[ "$confirm" != "PURGE" ]]; then
-    info "Purge cancelled. Configuration files preserved."
-    return
+    if [[ "$confirm" != "PURGE" ]]; then
+      info "Purge cancelled. Configuration files preserved."
+      return
+    fi
+  else
+    info "Skipping confirmation (XRAY_PURGE_CONFIRM=1)"
   fi
 
   # Remove container first

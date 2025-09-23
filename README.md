@@ -62,24 +62,42 @@ sudo docker logs --tail=80 xray-reality
 ss -ltnp | egrep ':(8443|1080)\b'
 ```
 
-## SOCKS5 认证支持
-脚本现在支持 SOCKS5 用户名/密码认证，增强代理安全性：
+## SOCKS5 安全策略
+脚本默认启用 SOCKS5 用户名/密码认证，增强代理安全性：
 
-### 启用认证
+### 默认安全策略
+- **监听地址**：默认仅监听 `127.0.0.1:1080`（本地访问）
+- **认证模式**：强制启用用户名/密码认证
+- **自动生成**：未设置凭证时，脚本自动生成强随机用户名和密码
+
+### 使用方式示例
+
+#### 本地使用（推荐，默认配置）
 ```bash
-export SOCKS_USERNAME=myuser
-export SOCKS_PASSWORD=mypass
+sudo bash ./scripts/xray_onekey.sh install
+# 安装完成后终端会显示自动生成的 SOCKS 用户名/密码
+```
+
+#### 指定自定义凭证
+```bash
+export SOCKS_USERNAME=alice
+export SOCKS_PASSWORD='Strong-Secret-Here'
 sudo bash ./scripts/xray_onekey.sh install
 ```
 
-### 禁用认证（默认）
-不设置 `SOCKS_USERNAME` 时，SOCKS5 使用无认证模式。
-
-### 监听地址配置
+#### 对公网开放（不推荐，需自担风险）
 ```bash
-export SOCKS_ADDR=127.0.0.1  # 仅本地访问
-export SOCKS_ADDR=0.0.0.0    # 所有网络接口（默认）
+export SOCKS_ADDR=0.0.0.0
+export SOCKS_USERNAME=alice
+export SOCKS_PASSWORD='Strong-Secret-Here'
+sudo bash ./scripts/xray_onekey.sh install
+# 并在 firewalld 中按需设置白名单或精确放行
 ```
+
+### 安全警告
+- **严禁** "无认证 + 公网监听" 组合
+- 若确需公网使用，请务必设置强凭证并限制来源 IP
+- 自动生成的凭证仅在安装时显示一次，不会写入日志文件
 
 ## 配置与数据路径
 - 仓库代码可以放在任意目录，只需在执行命令前 cd 到该目录。
@@ -91,9 +109,9 @@ export SOCKS_ADDR=0.0.0.0    # 所有网络接口（默认）
 export SNI=www.cloudflare.com
 export VLESS_PORT=8443
 export SOCKS_PORT=1080
-export SOCKS_ADDR=0.0.0.0  # SOCKS5 监听地址
-export SOCKS_USERNAME=user123  # SOCKS5 用户名（可选，启用认证）
-export SOCKS_PASSWORD=pass123  # SOCKS5 密码（与用户名配对）
+export SOCKS_ADDR=127.0.0.1  # SOCKS5 监听地址（默认 127.0.0.1）
+export SOCKS_USERNAME=user123  # SOCKS5 用户名（未设置时自动生成）
+export SOCKS_PASSWORD=pass123  # SOCKS5 密码（与用户名配对，未设置时自动生成）
 export UUID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 export PRIVATE_KEY="你的Reality私钥"
 export PUBLIC_KEY="与你的私钥配对的Reality公钥"
@@ -137,6 +155,13 @@ sudo bash ./scripts/xray_onekey.sh purge
 make purge
 ```
 删除 Docker 容器和所有配置文件（包括 `config.json`、`reality.env`），需要输入 `PURGE` 确认。
+
+#### 非交互模式（自动化场景）
+```bash
+export XRAY_PURGE_CONFIRM=1
+sudo bash ./scripts/xray_onekey.sh purge
+```
+设置 `XRAY_PURGE_CONFIRM=1` 可跳过交互确认，适用于自动化脚本。
 
 ## 开发与自测
 - 使用 `XRAY_DRY_RUN=1` 或 `--dry-run` 可在本地渲染配置并输出执行计划，不触发 docker、systemctl、iptables 等特权操作。例如：`XRAY_DRY_RUN=1 ./scripts/xray_onekey.sh install`。
