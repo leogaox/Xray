@@ -552,25 +552,30 @@ load_or_generate_identity() {
 
   if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
     local key_output=""
-    # 尝试 1：显式入口
-    key_output=$("$DOCKER_BIN" run --rm --entrypoint /usr/bin/xray "$XRAY_IMAGE" x25519 2>/dev/null || true)
+    # 尝试 1：显式入口，捕获 stdout/stderr
+    key_output=$("$DOCKER_BIN" run --rm --entrypoint /usr/bin/xray "$XRAY_IMAGE" x25519 2>&1 || true)
     # 尝试 2：回退到镜像默认 entrypoint
     if [[ -z "$key_output" ]]; then
-      key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>/dev/null || true)
+      key_output=$("$DOCKER_BIN" run --rm "$XRAY_IMAGE" x25519 2>&1 || true)
     fi
-    # 稳健解析：取“冒号后内容”的首行
+    # 尝试 3：备用镜像
+    if [[ -z "$key_output" ]]; then
+      key_output=$("$DOCKER_BIN" run --rm teddysun/xray:1.8.23 xray x25519 2>&1 || true)
+    fi
+    # 稳健解析：取“冒号/等号后内容”的首行
     if [[ -z "${XRAY_PRIVATE_KEY:-}" ]]; then
-      XRAY_PRIVATE_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^Private[[:space:]]*key[[:space:]]*:[[:space:]]*//p' | head -n1)
+      XRAY_PRIVATE_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^[Pp][Rr][Ii][Vv][Aa][Tt][Ee][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*//p' | head -n1)
     fi
     if [[ -z "${XRAY_PUBLIC_KEY:-}" ]]; then
-      XRAY_PUBLIC_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^Public[[:space:]]*key[[:space:]]*:[[:space:]]*//p' | head -n1)
+      XRAY_PUBLIC_KEY=$(printf '%s\n' "$key_output" | sed -n 's/^[Pp][Uu][Bb][Ll][Ii][Cc][[:space:]]*[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*//p' | head -n1)
     fi
-  fi
 
-  if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
-    error "Unable to determine Reality key pair."
-    error "Tried: 'docker run --rm --entrypoint /usr/bin/xray $XRAY_IMAGE x25519' and fallback 'docker run --rm $XRAY_IMAGE x25519'."
-    exit 1
+    if [[ -z "${XRAY_PRIVATE_KEY:-}" || -z "${XRAY_PUBLIC_KEY:-}" ]]; then
+      error "Unable to determine Reality key pair."
+      error "Raw output was:"
+      printf '%s\n' "$key_output" | printf_with_prefix
+      exit 1
+    fi
   fi
 
   persist_identity_env
