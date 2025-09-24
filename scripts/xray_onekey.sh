@@ -1283,7 +1283,7 @@ selftest_cmd() {
 
 show_usage() {
   cat <<'USAGE'
-Usage: xray_onekey.sh [options] <install|status|uninstall|selftest>
+Usage: xray_onekey.sh [options] <install|update|status|uninstall|purge|selftest>
 
 Options:
   --dry-run              Render configuration and action plan without applying changes.
@@ -1292,6 +1292,7 @@ Options:
 
 Commands:
   install    Install or upgrade the Xray VLESS Reality + SOCKS5 stack.
+  update     Update Xray image only, preserving existing configuration.
   status     Show container status and active listeners.
   uninstall  Remove the Xray container but keep configuration files.
   purge      Remove the Xray container and delete all configuration files.
@@ -1365,6 +1366,9 @@ main() {
     install)
       install_cmd "${REMAINING_ARGS[@]:-}"
       ;;
+    update)
+      update_cmd "${REMAINING_ARGS[@]:-}"
+      ;;
     status)
       status_cmd "${REMAINING_ARGS[@]:-}"
       ;;
@@ -1382,6 +1386,221 @@ main() {
       exit 1
       ;;
   esac
+}
+
+parse_config_ports() {
+  local config_file="${1:-$CONFIG_FILE}"
+
+  if [[ ! -f "$config_file" ]]; then
+    error "Configuration file ${config_file} does not exist"
+    exit 1
+  fi
+
+  # Validate JSON syntax first
+  if command -v jq >/dev/null 2>&1; then
+    if ! jq empty "$config_file" >/dev/null 2>&1; then
+      error "Configuration file ${config_file} contains invalid JSON"
+      exit 1
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    if ! python3 -m json.tool "$config_file" >/dev/null 2>&1; then
+      error "Configuration file ${config_file} contains invalid JSON"
+      exit 1
+    fi
+  else
+    # Basic validation: check if file starts with {
+    local first_char
+    first_char=$(head -c 1 "$config_file")
+    if [[ "$first_char" != "{" ]]; then
+      error "Configuration file ${config_file} does not start with '{'"
+      exit 1
+    fi
+  fi
+
+  # Parse VLESS port
+  if command -v jq >/dev/null 2>&1; then
+    LISTEN_PORT_VLESS=$(jq -r '.inbounds[] | select(.protocol=="vless") | .port' "$config_file" 2>/dev/null)
+  else
+    # Fallback to grep/awk for basic parsing
+    LISTEN_PORT_VLESS=$(grep -A 10 '"protocol": "vless"' "$config_file" | grep '"port"' | awk -F: '{print $2}' | tr -d ' ,' | head -1)
+  fi
+
+  if [[ -z "$LISTEN_PORT_VLESS" || "$LISTEN_PORT_VLESS" == "null" ]]; then
+    error "Could not find VLESS port in configuration"
+    exit 1
+  fi
+
+  # Parse SOCKS configuration if exists
+  local socks_listen socks_port
+  if command -v jq >/dev/null 2>&1; then
+    socks_listen=$(jq -r '.inbounds[] | select(.protocol=="socks") | .listen' "$config_file" 2>/dev/null)
+    socks_port=$(jq -r '.inbounds[] | select(.protocol=="socks") | .port' "$config_file" 2>/dev/null)
+  else
+    # Fallback to grep/awk for basic parsing
+    socks_listen=$(grep -A 10 '"protocol": "socks"' "$config_file" | grep '"listen"' | awk -F: '{print $2}' | tr -d ' ,"' | head -1)
+    socks_port=$(grep -A 10 '"protocol": "socks"' "$config_file" | grep '"port"' | awk -F: '{print $2}' | tr -d ' ,' | head -1)
+  fi
+
+  if [[ -n "$socks_listen" && "$socks_listen" != "null" && -n "$socks_port" && "$socks_port" != "null" ]]; then
+    SOCKS_LISTEN_ADDR="$socks_listen"
+    LISTEN_PORT_SOCKS="$socks_port"
+    XRAY_ENABLE_SOCKS=1
+  else
+    XRAY_ENABLE_SOCKS=0
+  fi
+}
+
+start_container_with_config() {
+  local image="$1"
+
+  if dry_run_active; then
+    dry_plan_skip "Start container ${CONTAINER_NAME} from image ${image} with ports ${LISTEN_PORT_VLESS}/${LISTEN_PORT_SOCKS:-disabled}"
+    return
+  fi
+
+  stop_existing_container
+
+  # Build port mapping arguments
+  local port_args="-p ${LISTEN_PORT_VLESS}:${LISTEN_PORT_VLESS}"
+
+  # SOCKS port mapping based on listen address and enable flag
+  if [[ "${XRAY_ENABLE_SOCKS:-0}" == "1" ]]; then
+    if [[ "$SOCKS_LISTEN_ADDR" == "127.0.0.1" ]]; then
+      port_args="$port_args -p 127.0.0.1:${LISTEN_PORT_SOCKS}:${LISTEN_PORT_SOCKS}"
+    else
+      port_args="$port_args -p ${LISTEN_PORT_SOCKS}:${LISTEN_PORT_SOCKS}"
+    fi
+  fi
+
+  "$DOCKER_BIN" run -d     --name "$CONTAINER_NAME"     --restart unless-stopped     $port_args     -v "$CONFIG_FILE":/etc/xray/config.json:ro     --entrypoint /usr/local/bin/xray     --user "$(id -u):$(id -g)"     "$image"     run -c /etc/xray/config.json >/dev/null
+  info "Started container ${CONTAINER_NAME} using image ${image}."
+}
+
+wait_for_container_healthy() {
+  local timeout=10
+  local start_time=$(date +%s)
+
+  if dry_run_active; then
+    dry_plan_skip "Wait for container to become healthy (timeout: ${timeout}s)"
+    return 0
+  fi
+
+  info "Waiting for container to become healthy (timeout: ${timeout}s)..."
+
+  while [[ $(($(date +%s) - start_time)) -lt $timeout ]]; do
+    # Check if container is running and not restarting/exited
+    local status
+    status=$("$DOCKER_BIN" inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+
+    if [[ "$status" == "running" ]]; then
+      # Check logs for successful startup
+      local logs
+      logs=$("$DOCKER_BIN" logs --tail=10 "$CONTAINER_NAME" 2>/dev/null || true)
+
+      # Look for successful startup indicators
+      if echo "$logs" | grep -q "Reading config:"; then
+        info "Container started successfully"
+        return 0
+      fi
+
+      # Check for fatal errors
+      if echo "$logs" | grep -q -E "failed to decode config|permission denied|Using confdir"; then
+        error "Container startup failed with fatal error"
+        return 1
+      fi
+    elif [[ "$status" == "restarting" || "$status" == "exited" ]]; then
+      error "Container status: ${status}"
+      return 1
+    fi
+
+    sleep 1
+  done
+
+  error "Container health check timeout"
+  return 1
+}
+
+update_cmd() {
+  if dry_run_active; then
+    reset_dry_context
+    dry_plan_action "Update Xray image only, preserving existing configuration"
+  fi
+
+  require_root
+
+  # Check if configuration exists
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    error "Configuration file ${CONFIG_FILE} not found. Run 'install' first."
+    exit 1
+  fi
+
+  # Parse existing configuration to get ports
+  info "Using existing config: ${CONFIG_FILE}"
+  parse_config_ports "$CONFIG_FILE"
+
+  # Record old image for potential rollback
+  local old_image_id=""
+  if container_exists; then
+    old_image_id=$("$DOCKER_BIN" inspect -f '{{.Image}}' "$CONTAINER_NAME" 2>/dev/null || echo "")
+  fi
+
+  # Pull latest image
+  if dry_run_active; then
+    dry_plan_skip "Pull docker image ${XRAY_IMAGE}"
+  else
+    info "Pulling Xray image ${XRAY_IMAGE}..."
+    if ! "$DOCKER_BIN" pull "$XRAY_IMAGE"; then
+      error "Failed to pull image ${XRAY_IMAGE}"
+      exit 1
+    fi
+    info "Pulled image: ${XRAY_IMAGE}"
+  fi
+
+  # Display port mapping info
+  if [[ "${XRAY_ENABLE_SOCKS:-0}" == "1" ]]; then
+    if [[ "$SOCKS_LISTEN_ADDR" == "127.0.0.1" ]]; then
+      info "SOCKS mapping: 127.0.0.1:${LISTEN_PORT_SOCKS} → container:${LISTEN_PORT_SOCKS}"
+    else
+      info "SOCKS mapping: 0.0.0.0:${LISTEN_PORT_SOCKS} → container:${LISTEN_PORT_SOCKS}"
+    fi
+  else
+    info "SOCKS disabled"
+  fi
+
+  # Start container with new image
+  info "Recreating container ${CONTAINER_NAME}..."
+  start_container_with_config "$XRAY_IMAGE"
+
+  # Verify container health
+  if dry_run_active; then
+    dry_plan_skip "Verify container health (simulated)"
+  else
+    info "Started container. Verifying..."
+    if ! wait_for_container_healthy; then
+      error "New container failed to start properly"
+
+      # Attempt rollback if we have old image
+      if [[ -n "$old_image_id" ]]; then
+        info "Attempting rollback to previous image..."
+        stop_existing_container
+        start_container_with_config "$old_image_id"
+
+        if wait_for_container_healthy; then
+          error "Rollback successful. Container restored with previous image."
+        else
+          error "Rollback failed. Manual intervention required."
+        fi
+      else
+        error "No previous image available for rollback."
+      fi
+      exit 1
+    fi
+    info "OK"
+  fi
+
+  if dry_run_active; then
+    print_dry_report
+  fi
 }
 
 main "$@"

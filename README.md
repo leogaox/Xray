@@ -56,11 +56,44 @@ curl -fsSL "https://raw.githubusercontent.com/leogaox/Xray/main/scripts/xray_one
 ## 常用命令
 ```bash
 sudo bash ./scripts/xray_onekey.sh status
+sudo bash ./scripts/xray_onekey.sh update    # 仅更新镜像，不改配置
 sudo bash ./scripts/xray_onekey.sh uninstall
 sudo bash ./scripts/xray_onekey.sh purge  # 删除容器和所有配置文件
 sudo docker logs --tail=80 xray-reality
 ss -ltnp | egrep ':(8443|1080)\b'
 ```
+
+## 更新镜像（不改配置）
+
+当您只想升级 Xray 版本而保留现有配置/身份/端口策略时，可以使用 `update` 命令。
+
+### 适用场景
+- 仅想升级 Xray 核心版本
+- 保留现有的 Reality 密钥、UUID、端口配置
+- 不修改 `/srv/docker/xray/config.json` 和 `reality.env`
+
+### 命令
+```bash
+sudo bash ./scripts/xray_onekey.sh update
+```
+
+### 行为说明
+- **拉取最新镜像**：从 Docker Hub 拉取最新的 Xray 镜像
+- **读取现有配置**：从 `/srv/docker/xray/config.json` 读取端口和监听设置
+- **重建容器**：停止旧容器，使用新镜像和现有配置重建
+- **健康检查**：验证新容器启动成功
+- **自动回滚**：若新容器启动失败，自动回滚到之前的镜像
+
+### 安全特性
+- 不会覆盖任何配置文件
+- 保持现有的 SOCKS 监听策略（127.0.0.1 或 0.0.0.0）
+- 端口映射与现有配置完全一致
+
+### 故障处理
+若 `update` 失败：
+- 查看详细日志：`sudo docker logs --tail=100 xray-reality`
+- 脚本会自动尝试回滚到之前的镜像
+- 如需手动干预，可使用 `uninstall` 后重新 `install`
 
 ## SOCKS5 安全策略
 脚本默认启用 SOCKS5 用户名/密码认证，增强代理安全性：
