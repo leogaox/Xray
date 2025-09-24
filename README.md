@@ -123,7 +123,7 @@ sudo bash ./scripts/xray_onekey.sh install
 export SOCKS_ADDR=0.0.0.0
 export SOCKS_USERNAME=alice
 export SOCKS_PASSWORD='Strong-Secret-Here'
-sudo bash ./scripts/xray_onekey.sh install
+sudo -E bash ./scripts/xray_onekey.sh install
 # 并在 firewalld 中按需设置白名单或精确放行
 ```
 
