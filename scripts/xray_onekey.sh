@@ -121,7 +121,7 @@ generate_socks_credentials() {
   if dry_run_active; then
     SOCKS_USERNAME="dryrun-user-$(dry_hash_from_seed "socks" | head -c 8)"
     SOCKS_PASSWORD="<redacted>"
-    info "Dry-run: Would generate SOCKS5 credentials"
+    echo "Dry-run: Would generate SOCKS5 credentials" >&2
     return 0
   fi
 
@@ -131,7 +131,7 @@ generate_socks_credentials() {
   # Generate password: 16-24 characters with mixed case and numbers
   SOCKS_PASSWORD=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c $((16 + RANDOM % 9)))
 
-  info "Generated SOCKS5 credentials: username=${SOCKS_USERNAME}, password=<redacted>"
+  echo "Generated SOCKS5 credentials: username=${SOCKS_USERNAME}, password=<redacted>" >&2
 }
 
 print_dry_report() {
@@ -832,8 +832,48 @@ write_config() {
   fi
 
   backup_config_if_exists
-  generate_config_json actual > "$CONFIG_FILE"
+
+  # Generate configuration and validate JSON syntax
+  local temp_config
+  temp_config=$(mktemp)
+
+  # Generate config to temporary file
+  generate_config_json actual > "$temp_config"
+
+  # Validate JSON syntax
+  if command -v jq >/dev/null 2>&1; then
+    if ! jq empty "$temp_config" >/dev/null 2>&1; then
+      error "Generated configuration contains invalid JSON syntax"
+      error "First 100 characters of problematic content:"
+      head -c 100 "$temp_config" | cat -A >&2
+      rm -f "$temp_config"
+      exit 1
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    if ! python3 -m json.tool "$temp_config" >/dev/null 2>&1; then
+      error "Generated configuration contains invalid JSON syntax"
+      error "First 100 characters of problematic content:"
+      head -c 100 "$temp_config" | cat -A >&2
+      rm -f "$temp_config"
+      exit 1
+    fi
+  else
+    # Basic validation: check if file starts with {
+    local first_char
+    first_char=$(head -c 1 "$temp_config")
+    if [[ "$first_char" != "{" ]]; then
+      error "Generated configuration does not start with '{' (first character: '${first_char}')"
+      error "First 100 characters of problematic content:"
+      head -c 100 "$temp_config" | cat -A >&2
+      rm -f "$temp_config"
+      exit 1
+    fi
+  fi
+
+  # Move validated config to final location
+  mv "$temp_config" "$CONFIG_FILE"
   chmod 640 "$CONFIG_FILE"
+  info "Configuration validated and saved to ${CONFIG_FILE}"
 }
 
 container_exists() {
