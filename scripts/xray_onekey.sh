@@ -217,6 +217,7 @@ LISTEN_PORT_SOCKS=${LISTEN_PORT_SOCKS:-1080}
 SOCKS_LISTEN_ADDR=${SOCKS_LISTEN_ADDR:-127.0.0.1}
 SOCKS_USERNAME=${SOCKS_USERNAME:-}
 SOCKS_PASSWORD=${SOCKS_PASSWORD:-}
+XRAY_ENABLE_SOCKS=${XRAY_ENABLE_SOCKS:-1}
 REALITY_DEST=${REALITY_DEST:-www.microsoft.com:443}
 REALITY_SERVER_NAMES=${REALITY_SERVER_NAMES:-www.microsoft.com}
 DNF_BIN=${DNF_BIN:-dnf}
@@ -711,42 +712,59 @@ generate_config_json() {
     private_value=${XRAY_PRIVATE_KEY}
   fi
 
-  # Validate SOCKS5 configuration
-  if [[ "$SOCKS_LISTEN_ADDR" == "0.0.0.0" ]] && [[ -z "$SOCKS_USERNAME" || -z "$SOCKS_PASSWORD" ]]; then
-    error "SOCKS5 cannot listen on 0.0.0.0 without authentication. Please set SOCKS_USERNAME and SOCKS_PASSWORD."
-    exit 1
-  fi
+  # Build SOCKS5 configuration based on enable flag
+  local socks_inbound=""
 
-  # Build SOCKS5 settings - always use password auth when credentials exist
-  local socks_auth="password"
-  local socks_accounts=""
+  if [[ "${XRAY_ENABLE_SOCKS:-1}" == "1" ]]; then
+    # Validate SOCKS5 configuration
+    if [[ "$SOCKS_LISTEN_ADDR" == "0.0.0.0" ]] && [[ -z "$SOCKS_USERNAME" || -z "$SOCKS_PASSWORD" ]]; then
+      error "SOCKS5 cannot listen on 0.0.0.0 without authentication. Please set SOCKS_USERNAME and SOCKS_PASSWORD."
+      exit 1
+    fi
 
-  if [[ -n "$SOCKS_USERNAME" && -n "$SOCKS_PASSWORD" ]]; then
-    local password_value="$SOCKS_PASSWORD"
-    if [[ "$mode" == "preview" ]]; then
-      password_value="<redacted>"
+    # Build SOCKS5 settings - always use password auth when credentials exist
+    local socks_auth="password"
+    local socks_accounts=""
+
+    if [[ -n "$SOCKS_USERNAME" && -n "$SOCKS_PASSWORD" ]]; then
+      local password_value="$SOCKS_PASSWORD"
+      if [[ "$mode" == "preview" ]]; then
+        password_value="<redacted>"
+      fi
+      socks_accounts=",
+          \"accounts\": [
+            {
+              \"user\": \"${SOCKS_USERNAME}\",
+              \"pass\": \"${password_value}\"
+            }
+          ]"
+    else
+      # Generate credentials if not provided
+      generate_socks_credentials
+      local password_value="$SOCKS_PASSWORD"
+      if [[ "$mode" == "preview" ]]; then
+        password_value="<redacted>"
+      fi
+      socks_accounts=",
+          \"accounts\": [
+            {
+              \"user\": \"${SOCKS_USERNAME}\",
+              \"pass\": \"${password_value}\"
+            }
+          ]"
     fi
-    socks_accounts=",
-        \"accounts\": [
-          {
-            \"user\": \"${SOCKS_USERNAME}\",
-            \"pass\": \"${password_value}\"
-          }
-        ]"
-  else
-    # Generate credentials if not provided
-    generate_socks_credentials
-    local password_value="$SOCKS_PASSWORD"
-    if [[ "$mode" == "preview" ]]; then
-      password_value="<redacted>"
-    fi
-    socks_accounts=",
-        \"accounts\": [
-          {
-            \"user\": \"${SOCKS_USERNAME}\",
-            \"pass\": \"${password_value}\"
-          }
-        ]"
+
+    socks_inbound=",
+    {
+      \"listen\": \"${SOCKS_LISTEN_ADDR}\",
+      \"port\": ${LISTEN_PORT_SOCKS},
+      \"protocol\": \"socks\",
+      \"settings\": {
+        \"auth\": \"${socks_auth}\"${socks_accounts},
+        \"udp\": true,
+        \"ip\": \"127.0.0.1\"
+      }
+    }"
   fi
 
   cat <<EOF
@@ -784,17 +802,7 @@ generate_config_json() {
           "minClientVersion": "1.8.0"
         }
       }
-    },
-    {
-      "listen": "${SOCKS_LISTEN_ADDR}",
-      "port": ${LISTEN_PORT_SOCKS},
-      "protocol": "socks",
-      "settings": {
-        "auth": "${socks_auth}"${socks_accounts},
-        "udp": true,
-        "ip": "127.0.0.1"
-      }
-    }
+    }${socks_inbound}
   ],
   "outbounds": [
     {
@@ -858,7 +866,20 @@ start_container() {
   fi
 
   stop_existing_container
-  "$DOCKER_BIN" run -d     --name "$CONTAINER_NAME"     --restart unless-stopped     -p "${LISTEN_PORT_VLESS}:${LISTEN_PORT_VLESS}"     -p "${LISTEN_PORT_SOCKS}:${LISTEN_PORT_SOCKS}"     -v "$CONFIG_FILE":/etc/xray/config.json:ro     --user "$(id -u):$(id -g)"     "$XRAY_IMAGE" >/dev/null
+
+  # Build port mapping arguments
+  local port_args="-p ${LISTEN_PORT_VLESS}:${LISTEN_PORT_VLESS}"
+
+  # SOCKS port mapping based on listen address and enable flag
+  if [[ "${XRAY_ENABLE_SOCKS:-1}" == "1" ]]; then
+    if [[ "$SOCKS_LISTEN_ADDR" == "127.0.0.1" ]]; then
+      port_args="$port_args -p 127.0.0.1:${LISTEN_PORT_SOCKS}:${LISTEN_PORT_SOCKS}"
+    else
+      port_args="$port_args -p ${LISTEN_PORT_SOCKS}:${LISTEN_PORT_SOCKS}"
+    fi
+  fi
+
+  "$DOCKER_BIN" run -d     --name "$CONTAINER_NAME"     --restart unless-stopped     $port_args     -v "$CONFIG_FILE":/etc/xray/config.json:ro     --entrypoint /usr/local/bin/xray     --user "$(id -u):$(id -g)"     "$XRAY_IMAGE"     run -c /etc/xray/config.json >/dev/null
   info "Started container ${CONTAINER_NAME} using image ${XRAY_IMAGE}."
 }
 
